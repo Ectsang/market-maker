@@ -1,9 +1,10 @@
 // main.rs
 use chrono::{DateTime, Utc};
-use config::Config;
+use dotenvy::dotenv;
 use prettytable::{cell, format, row, Table};
 use reqwest::Client;
 use serde_json::Value;
+use std::env;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::{error::Error, time::Duration};
@@ -22,26 +23,26 @@ struct OrderBook {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let mut file = BufWriter::new(File::create("output.txt")?);
+    let num_secs = 10;
+    let now: DateTime<Utc> = Utc::now();
+    let now_str = now.to_rfc3339();
 
-    let settings = Config::builder()
-        // Add in `src/Settings.toml`
-        .add_source(config::File::with_name("src/Settings"))
-        // Add in settings from the environment (with a prefix of APP)
-        // Eg.. `APP_DEBUG=1 ./target/app` would set the `debug` key
-        .add_source(config::Environment::with_prefix("APP"))
-        .build()
-        .unwrap();
+    // Create a new file for each run
+    let file_name = format!("order_book_{}.txt", now_str);
+    let mut file = BufWriter::new(File::create(file_name)?);
 
-    // let api_key = settings.get_string("api_key")?;
-    // let api_url = settings.get_string("api_url")?;
-    // println!("API Key: {}", api_key);
-    // println!("API URL: {}", api_url);
+    // Load the configuration from .env
+    dotenv().expect("Failed to load .env file");
+    let environment = env::var("ENV").expect("ENV must be set");
+    let api_key = env::var("API_KEY").expect("API_KEY must be set");
+    let api_url = env::var("API_URL").expect("API_URL must be set");
+    println!("Environment: {}", environment);
+    println!("API Key: {}", api_key);
+    println!("API URL: {}", api_url);
 
     let client = Client::new();
 
     // Get the current UTC datetime
-    let now: DateTime<Utc> = Utc::now();
     let divider = "-------------------------";
     let now_str = now.to_rfc3339();
     println!("\n\n\n{}", divider);
@@ -72,12 +73,32 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .collect();
                 let order_book = OrderBook { bids, asks };
                 visualize_order_book(&order_book, &mut file)?;
+
+                // now mark down market price and date time
+                let market_price = fetch_market_price(&client).await?;
+                let now: DateTime<Utc> = Utc::now();
+                println!("{} Price: {}", now.to_rfc3339(), market_price);
+                write!(file, "{} Price: {}\n", now.to_rfc3339(), market_price)?;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
             }
         }
-        sleep(Duration::from_secs(4)).await;
+        sleep(Duration::from_secs(num_secs)).await;
+    }
+}
+
+async fn fetch_market_price(client: &Client) -> Result<f64, Box<dyn Error>> {
+    let api_url = "https://api.binance.com/api/v3/ticker/price?symbol=BNBUSDC";
+    let response = client.get(api_url).send().await?;
+    if response.status().is_success() {
+        let price = response.json::<Value>().await?["price"]
+            .as_str()
+            .unwrap()
+            .parse()?;
+        Ok(price)
+    } else {
+        Err("Failed to fetch market price".into())
     }
 }
 
@@ -92,7 +113,7 @@ async fn fetch_order_book(client: &Client) -> Result<Value, Box<dyn Error>> {
     }
 }
 
-async fn execute_trades(client: &Client) -> Result<(), Box<dyn Error>> {
+async fn _execute_trades(client: &Client, url: &str) -> Result<(), Box<dyn Error>> {
     let order_book = fetch_order_book(client).await?;
 
     // Example logic for determining your bid and ask prices
@@ -100,20 +121,21 @@ async fn execute_trades(client: &Client) -> Result<(), Box<dyn Error>> {
     let ask_price = order_book["asks"][0]["price"].as_f64().unwrap() * 1.001; // 0.1% above the best ask
 
     // Example functions to place orders
-    place_order(client, bid_price, "buy", "0.01 BTC").await?;
-    place_order(client, ask_price, "sell", "0.01 BTC").await?;
+    _place_order(client, url, bid_price, "buy", "0.01 BTC").await?;
+    _place_order(client, url, ask_price, "sell", "0.01 BTC").await?;
 
     Ok(())
 }
 
-async fn place_order(
+async fn _place_order(
     client: &Client,
+    url: &str,
     price: f64,
     side: &str,
     amount: &str,
 ) -> Result<(), Box<dyn Error>> {
     let order = client
-        .post("YOUR_ORDER_PLACEMENT_URL")
+        .post(url)
         .json(&serde_json::json!({
             "price": price,
             "side": side,
@@ -150,7 +172,7 @@ fn visualize_order_book(order_book: &OrderBook, file: &mut BufWriter<File>) -> i
     table.printstd(); // Print the table to standard output
 
     let table_string = table.to_string();
-    writeln!(file, "{}", table_string)?;  // Write the formatted table to the file
+    writeln!(file, "{}", table_string)?; // Write the formatted table to the file
     file.flush()?;
 
     Ok(())

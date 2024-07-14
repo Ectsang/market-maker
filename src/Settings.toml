@@ -1,4 +1,0 @@
-api_key="api key"
-api_url="api url"
-timeout_seconds = 30
-environment = "development"
