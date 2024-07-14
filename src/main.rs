@@ -1,10 +1,14 @@
 // main.rs
+use chrono::{DateTime, Utc};
 use config::Config;
+use prettytable::{cell, format, row, Table};
 use reqwest::Client;
 use serde_json::Value;
+use std::fs::File;
+use std::io::{self, BufWriter, Write};
 use std::{error::Error, time::Duration};
 use tokio::time::sleep;
-use prettytable::{Table, row, cell};
+extern crate chrono;
 
 struct Order {
     price: f64,
@@ -16,9 +20,10 @@ struct OrderBook {
     asks: Vec<Order>,
 }
 
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let mut file = BufWriter::new(File::create("output.txt")?);
+
     let settings = Config::builder()
         // Add in `src/Settings.toml`
         .add_source(config::File::with_name("src/Settings"))
@@ -28,12 +33,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .build()
         .unwrap();
 
-    let api_key = settings.get_string("api_key")?;
-    let api_url = settings.get_string("api_url")?;
-    println!("API Key: {}", api_key);
-    println!("API URL: {}", api_url);
+    // let api_key = settings.get_string("api_key")?;
+    // let api_url = settings.get_string("api_url")?;
+    // println!("API Key: {}", api_key);
+    // println!("API URL: {}", api_url);
 
     let client = Client::new();
+
+    // Get the current UTC datetime
+    let now: DateTime<Utc> = Utc::now();
+    let divider = "-------------------------";
+    let now_str = now.to_rfc3339();
+    println!("\n\n\n{}", divider);
+    println!("{}", now_str);
+    write!(file, "{}\n", now_str)?;
 
     loop {
         match fetch_order_book(&client).await {
@@ -58,21 +71,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     })
                     .collect();
                 let order_book = OrderBook { bids, asks };
-                visualize_order_book(&order_book);
+                visualize_order_book(&order_book, &mut file)?;
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
             }
         }
-        sleep(Duration::from_secs(10)).await;
+        sleep(Duration::from_secs(4)).await;
     }
 }
 
 async fn fetch_order_book(client: &Client) -> Result<Value, Box<dyn Error>> {
-    let response = client
-        .get("https://api.binance.com/api/v3/depth?symbol=BNBUSDC")
-        .send()
-        .await?;
+    let api_url = "https://api.binance.com/api/v3/depth?symbol=BNBUSDC&limit=10";
+    let response = client.get(api_url).send().await?;
     if response.status().is_success() {
         let order_book = response.json::<Value>().await?;
         Ok(order_book)
@@ -116,16 +127,31 @@ async fn place_order(
     Ok(())
 }
 
-fn visualize_order_book(order_book: &OrderBook) {
+fn visualize_order_book(order_book: &OrderBook, file: &mut BufWriter<File>) -> io::Result<()> {
     let mut table = Table::new();
+    table.set_format(*format::consts::FORMAT_BORDERS_ONLY);
     table.add_row(row!["BIDS", "ASKS"]);
-    
+
     let max_len = std::cmp::max(order_book.bids.len(), order_book.asks.len());
     for i in 0..max_len {
-        let bid = order_book.bids.get(i).map(|o| format!("{} @ {}", o.quantity, o.price)).unwrap_or_default();
-        let ask = order_book.asks.get(i).map(|o| format!("{} @ {}", o.quantity, o.price)).unwrap_or_default();
+        let bid = order_book
+            .bids
+            .get(i)
+            .map(|o| format!("{} @ {}", o.quantity, o.price))
+            .unwrap_or_default();
+        let ask = order_book
+            .asks
+            .get(i)
+            .map(|o| format!("{} @ {}", o.quantity, o.price))
+            .unwrap_or_default();
         table.add_row(row![bid, ask]);
     }
 
     table.printstd(); // Print the table to standard output
+
+    let table_string = table.to_string();
+    writeln!(file, "{}", table_string)?;  // Write the formatted table to the file
+    file.flush()?;
+
+    Ok(())
 }
